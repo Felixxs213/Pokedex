@@ -1,17 +1,27 @@
 import { useState } from "react";
 import confetti from "canvas-confetti";
+import {
+  FIRST_GENERATION_COUNT,
+  formatGeneration,
+  formatHeight,
+  formatPercent,
+  formatWeight,
+  getAnimatedSprite,
+  getArtworkUrl,
+  getFlavorText,
+  getPixelSpriteUrl,
+  getRandomPokemonId,
+  humanize,
+  pokedexNumber,
+  scanPokemon,
+} from "./pokeapi.js";
 import "./App.css";
 
 /* ------------------------------------------------------------------
-   1. CONFIG
-   Every PokéAPI endpoint starts with the same base URL, so we keep
-   it in one place and build the rest of the URLs from it.
+   1. UI CONFIG
+   Values that only describe how the device looks. Anything that
+   talks to PokéAPI lives over in ./pokeapi.js.
 ------------------------------------------------------------------ */
-
-const API_BASE = "https://pokeapi.co/api/v2";
-const SPRITES_BASE =
-  "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon";
-const FIRST_GENERATION_COUNT = 151;
 
 const TYPE_COLORS = {
   normal: "#a8a878",
@@ -46,186 +56,7 @@ const STAT_ROWS = [
 const SCREEN_PAGES = ["PROFILE", "BATTLE"];
 
 /* ------------------------------------------------------------------
-   2. API LAYER
-   Small wrappers around fetch so the rest of the app never has to
-   think about URLs or error handling.
------------------------------------------------------------------- */
-
-async function getJson(url) {
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(`PokéAPI responded with ${response.status}`);
-  }
-
-  return response.json();
-}
-
-const getPokemon = (id) => getJson(`${API_BASE}/pokemon/${id}`);
-const getSpecies = (id) => getJson(`${API_BASE}/pokemon-species/${id}`);
-const getType = (name) => getJson(`${API_BASE}/type/${name}`);
-const getAbility = (name) => getJson(`${API_BASE}/ability/${name}`);
-
-/* ------------------------------------------------------------------
-   3. SMALL FORMATTERS
-   The API speaks in snake_case, decimetres and hectograms.
-   These helpers translate that into things a human wants to read.
------------------------------------------------------------------- */
-
-const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-
-const humanize = (text) => text.split("-").map(capitalize).join(" ");
-
-const pokedexNumber = (id) => `#${String(id).padStart(3, "0")}`;
-
-// The sprite files PokeAPI itself serves. Building the url ourselves saves
-// us an extra request for every Pokémon we only want a picture of.
-const getArtworkUrl = (id) => `${SPRITES_BASE}/other/official-artwork/${id}.png`;
-const getPixelSpriteUrl = (id) => `${SPRITES_BASE}/${id}.png`;
-
-
-const formatHeight = (decimetres) => `${(decimetres / 10).toFixed(1)} m`;
-
-const formatWeight = (hectograms) => `${(hectograms / 10).toFixed(1)} kg`;
-
-const formatGeneration = (name) => `Gen ${name.replace("generation-", "").toUpperCase()}`;
-
-const formatPercent = (value, max) => `${Math.round((value / max) * 100)}%`;
-
-function getFlavorText(species) {
-  const englishEntries = species.flavor_text_entries.filter(
-    (entry) => entry.language.name === "en"
-  );
-
-  const firstEntry = englishEntries[0];
-
-  if (!firstEntry) {
-    return "No archived field notes were found for this specimen.";
-  }
-
-  return firstEntry.flavor_text.replace(/[\n\f]/g, " ");
-}
-
-function getPrimaryAbility(pokemon) {
-  const normalAbility = pokemon.abilities.find((slot) => !slot.is_hidden);
-  return (normalAbility ?? pokemon.abilities[0]).ability.name;
-}
-
-function getAnimatedSprite(pokemon) {
-  return (
-    pokemon.sprites.versions["generation-v"]["black-white"].animated
-      ?.front_default ?? pokemon.sprites.front_default
-  );
-}
-
-/* ------------------------------------------------------------------
-   4. ENDPOINT BUILDERS
-   Each of these turns one API response into a simple shape that the
-   JSX can render without digging through nested objects.
------------------------------------------------------------------- */
-
-async function buildTypeMatchups(typeNames) {
-  // One request per type the Pokémon has. They are independent, so we
-  // fire them all at once instead of waiting for one after another.
-  const typeResponses = await Promise.all(typeNames.map(getType));
-
-  const weak = new Set();
-  const resistant = new Set();
-  const immune = new Set();
-
-  typeResponses.forEach((type) => {
-    const damageRelations = type.damage_relations;
-
-    damageRelations.double_damage_from.forEach((entry) => weak.add(entry.name));
-    damageRelations.half_damage_from.forEach((entry) => resistant.add(entry.name));
-    damageRelations.no_damage_from.forEach((entry) => immune.add(entry.name));
-  });
-
-  // A type can show up twice: Water Pokémon are weak to Grass but also
-  // resist Water itself. Weakness wins, so we filter duplicates out.
-  const isNotWeakened = (name) => !weak.has(name) && !immune.has(name);
-  const isNotResisted = (name) => !weak.has(name) && !immune.has(name);
-
-  return {
-    weak: [...weak].filter(isNotWeakened),
-    resistant: [...resistant].filter(isNotResisted),
-    immune: [...immune],
-  };
-}
-
-async function buildAbilityInfo(pokemon) {
-  const abilityName = getPrimaryAbility(pokemon);
-  const abilityData = await getAbility(abilityName);
-  const englishEntry = abilityData.effect_entries.find(
-    (entry) => entry.language.name === "en"
-  );
-
-  return {
-    name: humanize(abilityName),
-    text: englishEntry?.short_effect ?? "No effect data available.",
-  };
-}
-
-function getIdFromUrl(url) {
-  // PokeAPI urls look like ".../pokemon-species/25/" with a trailing slash,
-  // so we drop the empty pieces before reading the last one.
-  const parts = url.split("/").filter(Boolean);
-  return Number(parts[parts.length - 1]);
-}
-
-function flattenEvolutionChain(node, stages = [], depth = 0) {
-  // Every species link in the chain looks like:
-  // { species: { name, url }, evolves_to: [ ...more of the same ] }
-  // `depth` is 0 for the starting Pokémon and grows with every evolution,
-  // which is how we know how far to indent it later.
-  stages.push({
-    id: getIdFromUrl(node.species.url),
-    name: node.species.name,
-    depth,
-  });
-
-  node.evolves_to.forEach((nextStage) => {
-    flattenEvolutionChain(nextStage, stages, depth + 1);
-  });
-
-  return stages;
-}
-
-async function buildEvolutionChain(species) {
-  const chainResponse = await getJson(species.evolution_chain.url);
-
-  // The response is { id, chain: { species, evolves_to } } — the tree
-  // we want lives one level down, under `chain`.
-  return flattenEvolutionChain(chainResponse.chain);
-}
-
-/* ------------------------------------------------------------------
-   5. THE SCAN
-   One helper that grabs everything we need for a single Pokémon.
------------------------------------------------------------------- */
-
-async function scanPokemon(id) {
-  // Step 1: these two requests depend only on the id.
-  const pokemon = await getPokemon(id);
-  const species = await getSpecies(id);
-
-  // Step 2: three more requests that only need `pokemon` / `species`,
-  // so they run in parallel with Promise.all.
-  const [typeMatchups, ability, evolutionChain] = await Promise.all([
-    buildTypeMatchups(pokemon.types.map((slot) => slot.type.name)),
-    buildAbilityInfo(pokemon),
-    buildEvolutionChain(species),
-  ]);
-
-  return { pokemon, species, typeMatchups, ability, evolutionChain };
-}
-
-function getRandomPokemonId() {
-  return Math.floor(Math.random() * FIRST_GENERATION_COUNT) + 1;
-}
-
-/* ------------------------------------------------------------------
-   6. SMALL PRESENTATION COMPONENTS
+   2. SMALL PRESENTATION COMPONENTS
 ------------------------------------------------------------------ */
 
 function TypeBadge({ name }) {
@@ -276,7 +107,7 @@ function SpeakerGrille() {
 }
 
 /* ------------------------------------------------------------------
-   7. THE LCD SCREEN
+   3. THE LCD SCREEN
 ------------------------------------------------------------------ */
 
 function ScreenLoading() {
@@ -398,7 +229,7 @@ function DexScreen({ entry, page, isLoading, error }) {
 }
 
 /* ------------------------------------------------------------------
-   8. INFO PANELS
+   4. INFO PANELS
 ------------------------------------------------------------------ */
 
 function Panel({ title, badge, children, className = "" }) {
@@ -584,7 +415,7 @@ function RegistryPanel({ caught, onPick }) {
 }
 
 /* ------------------------------------------------------------------
-   9. THE APP
+   5. THE APP
 ------------------------------------------------------------------ */
 
 function App() {
@@ -650,7 +481,11 @@ function App() {
     );
   }
 
-  const hasEntry = Boolean(entry) && !isLoading && !error;
+  // `hasEntry` means "we have data worth showing". It deliberately ignores
+  // isLoading so the panels below the device keep their last Pokémon on
+  // screen while a new scan is in flight, instead of flickering away.
+  const hasEntry = Boolean(entry) && !error;
+  const controlsDisabled = !hasEntry || isLoading;
 
   return (
     <div className="app">
@@ -682,7 +517,7 @@ function App() {
                 type="button"
                 className="roundButton"
                 onClick={goToPreviousPage}
-                disabled={!hasEntry}
+                disabled={controlsDisabled}
                 aria-label="Previous page"
               >
                 B
@@ -691,7 +526,7 @@ function App() {
                 type="button"
                 className="roundButton"
                 onClick={goToNextPage}
-                disabled={!hasEntry}
+                disabled={controlsDisabled}
                 aria-label="Next page"
               >
                 A
@@ -702,7 +537,7 @@ function App() {
               type="button"
               className="roundButton roundButton--small"
               onClick={registerCurrentPokemon}
-              disabled={!hasEntry}
+              disabled={controlsDisabled}
               aria-label="Register Pokémon"
             >
               ●
