@@ -12,6 +12,9 @@ const SPRITES_BASE =
 
 export const FIRST_GENERATION_COUNT = 151;
 
+// If the API never answers, give up after this long instead of spinning forever.
+const REQUEST_TIMEOUT_MS = 10000;
+
 /* ------------------------------------------------------------------
    1. API LAYER
    Small wrappers around fetch so the rest of the app never has to
@@ -19,7 +22,18 @@ export const FIRST_GENERATION_COUNT = 151;
 ------------------------------------------------------------------ */
 
 export async function getJson(url, { signal } = {}) {
-  const response = await fetch(url, { signal });
+  // `AbortSignal.timeout` cancels the request if the server is too slow, so a
+  // stuck connection can never leave the app scanning forever.
+  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+
+  // The caller can also pass its own signal — we use that to cancel a scan
+  // that has been replaced by a newer one. Combine both so whichever fires
+  // first wins.
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+
+  const response = await fetch(url, { signal: combinedSignal });
 
   if (!response.ok) {
     throw new Error(`PokéAPI responded with ${response.status}`);
@@ -28,10 +42,14 @@ export async function getJson(url, { signal } = {}) {
   return response.json();
 }
 
-export const getPokemon = (id) => getJson(`${API_BASE}/pokemon/${id}`);
-export const getSpecies = (id) => getJson(`${API_BASE}/pokemon-species/${id}`);
-export const getType = (name) => getJson(`${API_BASE}/type/${name}`);
-export const getAbility = (name) => getJson(`${API_BASE}/ability/${name}`);
+export const getPokemon = (id, options) =>
+  getJson(`${API_BASE}/pokemon/${id}`, options);
+export const getSpecies = (id, options) =>
+  getJson(`${API_BASE}/pokemon-species/${id}`, options);
+export const getType = (name, options) =>
+  getJson(`${API_BASE}/type/${name}`, options);
+export const getAbility = (name, options) =>
+  getJson(`${API_BASE}/ability/${name}`, options);
 
 /* ------------------------------------------------------------------
    2. SMALL FORMATTERS
@@ -93,10 +111,14 @@ export function getAnimatedSprite(pokemon) {
    JSX can render without digging through nested objects.
 ------------------------------------------------------------------ */
 
-export async function buildTypeMatchups(typeNames) {
+export async function buildTypeMatchups(typeNames, options) {
   // One request per type the Pokémon has. They are independent, so we
   // fire them all at once instead of waiting for one after another.
-  const typeResponses = await Promise.all(typeNames.map(getType));
+  // (The arrow wrapper matters: `.map(getType)` would pass the array
+  // index in as `options`.)
+  const typeResponses = await Promise.all(
+    typeNames.map((name) => getType(name, options))
+  );
 
   const weak = new Set();
   const resistant = new Set();
@@ -122,9 +144,9 @@ export async function buildTypeMatchups(typeNames) {
   };
 }
 
-export async function buildAbilityInfo(pokemon) {
+export async function buildAbilityInfo(pokemon, options) {
   const abilityName = getPrimaryAbility(pokemon);
-  const abilityData = await getAbility(abilityName);
+  const abilityData = await getAbility(abilityName, options);
   const englishEntry = abilityData.effect_entries.find(
     (entry) => entry.language.name === "en"
   );
@@ -137,9 +159,11 @@ export async function buildAbilityInfo(pokemon) {
 
 export function getIdFromUrl(url) {
   // PokeAPI urls look like ".../pokemon-species/25/" with a trailing slash,
-  // so we drop the empty pieces before reading the last one.
-  const parts = url.split("/").filter(Boolean);
-  return Number(parts[parts.length - 1]);
+  // so we drop the empty pieces before reading the last one. We return null
+  // (rather than NaN) if the url does not end in a number.
+  const parts = String(url).split("/").filter(Boolean);
+  const id = Number(parts[parts.length - 1]);
+  return Number.isFinite(id) ? id : null;
 }
 
 export function flattenEvolutionChain(node, stages = [], depth = 0) {
@@ -160,8 +184,8 @@ export function flattenEvolutionChain(node, stages = [], depth = 0) {
   return stages;
 }
 
-export async function buildEvolutionChain(species) {
-  const chainResponse = await getJson(species.evolution_chain.url);
+export async function buildEvolutionChain(species, options) {
+  const chainResponse = await getJson(species.evolution_chain.url, options);
 
   // The response is { id, chain: { species, evolves_to } } — the tree
   // we want lives one level down, under `chain`.
@@ -173,20 +197,49 @@ export async function buildEvolutionChain(species) {
    One helper that grabs everything we need for a single Pokémon.
 ------------------------------------------------------------------ */
 
-export async function scanPokemon(id) {
-  // Step 1: these two requests depend only on the id.
-  const pokemon = await getPokemon(id);
-  const species = await getSpecies(id);
+export async function scanPokemon(id, options = {}) {
+  // The Pokémon and its species are the core of the entry, so if either of
+  // these fails there is nothing to show and the error is left to bubble up.
+  const pokemon = await getPokemon(id, options);
+  const species = await getSpecies(id, options);
 
-  // Step 2: three more requests that only need `pokemon` / `species`,
-  // so they run in parallel with Promise.all.
-  const [typeMatchups, ability, evolutionChain] = await Promise.all([
-    buildTypeMatchups(pokemon.types.map((slot) => slot.type.name)),
-    buildAbilityInfo(pokemon),
-    buildEvolutionChain(species),
-  ]);
+  // The other three only need `pokemon` / `species`, so they run in parallel.
+  // `allSettled` (not `all`) means one slow or failing request no longer
+  // throws away the data the others already fetched.
+  const [matchupsResult, abilityResult, evolutionResult] =
+    await Promise.allSettled([
+      buildTypeMatchups(
+        pokemon.types.map((slot) => slot.type.name),
+        options
+      ),
+      buildAbilityInfo(pokemon, options),
+      buildEvolutionChain(species, options),
+    ]);
 
-  return { pokemon, species, typeMatchups, ability, evolutionChain };
+  // If the caller cancelled this scan (because a newer one started), throw so
+  // the caller does not apply half-finished results.
+  if (options.signal?.aborted) {
+    throw new DOMException("Scan aborted", "AbortError");
+  }
+
+  return {
+    pokemon,
+    species,
+    // `ok: false` tells the matching panel to say "unavailable" instead of
+    // pretending the Pokémon has no weaknesses.
+    typeMatchups:
+      matchupsResult.status === "fulfilled"
+        ? matchupsResult.value
+        : { weak: [], resistant: [], immune: [], ok: false },
+    ability:
+      abilityResult.status === "fulfilled"
+        ? abilityResult.value
+        : { name: "Unknown", text: "Ability data unavailable.", ok: false },
+    // An evolution chain always has at least the Pokémon itself, so an empty
+    // list means this request failed.
+    evolutionChain:
+      evolutionResult.status === "fulfilled" ? evolutionResult.value : [],
+  };
 }
 
 export function getRandomPokemonId() {

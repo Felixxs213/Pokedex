@@ -77,6 +77,10 @@ check(
   "no trailing slash still works",
   getIdFromUrl("https://pokeapi.co/api/v2/pokemon-species/1") === 1
 );
+check(
+  "garbage url returns null instead of NaN",
+  getIdFromUrl("https://pokeapi.co/api/v2/pokemon-species/bulbasaur/") === null
+);
 
 /* ------------------------------------------------------------------
    2. GROUND TRUTH TYPE MATCHUPS
@@ -230,7 +234,99 @@ for (const problem of sweepProblems) {
 checks += ids.length;
 
 /* ------------------------------------------------------------------
-   5. SUMMARY
+   5. DEGRADATION AND CANCELLATION
+   A single failing sub-request must not sink the whole scan, and an
+   aborted scan must not be applied.
+------------------------------------------------------------------ */
+
+section("degradation and cancellation");
+
+const realFetch = globalThis.fetch;
+
+// Pretends a specific kind of request always fails.
+function breakRequests(pattern) {
+  globalThis.fetch = (url, init) => {
+    if (String(url).includes(pattern)) {
+      return Promise.resolve(new Response("nope", { status: 500 }));
+    }
+    return realFetch(url, init);
+  };
+}
+
+// --- one broken ability request ---
+breakRequests("/ability/");
+const failedAbility = await scanPokemon(25);
+globalThis.fetch = realFetch;
+
+check(
+  "failed ability still returns the Pokémon",
+  failedAbility.pokemon.name === "pikachu",
+  `got ${failedAbility.pokemon.name}`
+);
+check(
+  "failed ability is flagged ok:false",
+  failedAbility.ability.ok === false
+);
+check(
+  "failed ability leaves matchups intact",
+  failedAbility.typeMatchups.ok !== false &&
+    failedAbility.typeMatchups.weak.length > 0
+);
+
+// --- one broken type request ---
+breakRequests("/type/");
+const failedTypes = await scanPokemon(1);
+globalThis.fetch = realFetch;
+
+check(
+  "failed type request still returns the Pokémon",
+  failedTypes.pokemon.name === "bulbasaur"
+);
+check(
+  "failed type request is flagged ok:false",
+  failedTypes.typeMatchups.ok === false
+);
+check(
+  "failed type request gives safe empty lists",
+  failedTypes.typeMatchups.weak.length === 0 &&
+    failedTypes.typeMatchups.resistant.length === 0
+);
+
+// --- a cancelled scan must reject, not resolve with half data ---
+const controller = new AbortController();
+controller.abort();
+
+let abortedWith = "none";
+try {
+  await scanPokemon(25, { signal: controller.signal });
+} catch (error) {
+  abortedWith = error.name;
+}
+
+check(
+  "pre-aborted signal rejects with AbortError",
+  abortedWith === "AbortError",
+  `got ${abortedWith}`
+);
+
+// --- getJson honours a caller signal ---
+let jsonAbortName = "none";
+try {
+  await getJson("https://pokeapi.co/api/v2/pokemon/1", {
+    signal: controller.signal,
+  });
+} catch (error) {
+  jsonAbortName = error.name;
+}
+
+check(
+  "getJson honours an aborted signal",
+  jsonAbortName === "AbortError",
+  `got ${jsonAbortName}`
+);
+
+/* ------------------------------------------------------------------
+   6. SUMMARY
 ------------------------------------------------------------------ */
 
 console.log(`\n${checks} checks, ${failures} failure(s)`);

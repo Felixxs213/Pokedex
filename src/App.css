@@ -18,16 +18,15 @@
 
   --lcd-bg: #071322;
   --lcd-text: #86e6ff;
-  --lcd-dim: #4d7f96;
+  --lcd-dim: #5b93ab;
   --lcd-accent: #ffd32a;
 
-  --ink: #101728;
   --page-bg: #0b1020;
 
   --panel-bg: #ffffff;
   --panel-border: #e4e7ef;
   --panel-text: #1d2436;
-  --panel-muted: #77809a;
+  --panel-muted: #5f6983;
 
   --radius-sm: 10px;
   --radius-md: 16px;
@@ -305,7 +304,7 @@ body {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.2em;
-  color: #7a735f;
+  color: #6b6450;
 }
 
 /* the diagonal seam between the red shell and the cream base */
@@ -557,6 +556,37 @@ body {
 }
 
 /* ==================================================================
+   ACCESSIBILITY HELPERS
+================================================================== */
+
+/* Visible to screen readers only, but still announced when it changes. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A clearly visible ring for keyboard users. White reads well against the
+   red shell and navy band; the panels are white, so their chips use blue. */
+.roundButton:focus-visible,
+.pillButton:focus-visible {
+  outline: 3px solid #ffffff;
+  outline-offset: 3px;
+}
+
+.registry__chip:focus-visible {
+  outline: 3px solid var(--dex-blue);
+  outline-offset: 2px;
+}
+
+/* ==================================================================
    PANELS
 ================================================================== */
 
@@ -592,7 +622,7 @@ body {
   border-bottom: 2px solid #eef0f6;
 }
 
-.panel__header h3 {
+.panel__header h2 {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -671,7 +701,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: #8b94ab;
+  color: #5f6983;
 }
 
 .dataGrid__value {
@@ -756,13 +786,11 @@ body {
   padding: 5px 12px;
   border-radius: 999px;
   border: 1px solid rgba(0, 0, 0, 0.12);
-  color: #fff;
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 .matchupGroup + .matchupGroup {
@@ -783,7 +811,7 @@ body {
 }
 
 .matchupGroup__title--resist {
-  color: #2f8f5b;
+  color: #217a47;
 }
 
 .matchupGroup__title--immune {
@@ -808,7 +836,7 @@ body {
 }
 
 .evolution__arrow {
-  color: #aab1c4;
+  color: #5f6983;
   font-size: 20px;
   font-weight: 700;
   line-height: 1;
@@ -842,7 +870,7 @@ body {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: #97a0b5;
+  color: #5f6983;
 }
 
 .evolution__card.isCurrent {
@@ -888,6 +916,35 @@ body {
   transform: translateY(-2px);
   border-color: var(--dex-blue);
   background: #eef2ff;
+}
+
+/* ==================================================================
+   CRASH FALLBACK (rendered by <ErrorBoundary>)
+================================================================== */
+
+.crash {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.crash__title {
+  margin: 0;
+  font-size: clamp(28px, 5vw, 44px);
+  color: #fff;
+}
+
+.crash__text {
+  margin: 0;
+  max-width: 420px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: #9aa6c4;
 }
 
 /* ==================================================================
@@ -943,5 +1000,23 @@ body {
 
   .dataGrid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ==================================================================
+   REDUCED MOTION
+   Some people get motion sickness or distraction from movement. When the
+   system asks for less motion, we stop the looping scan beam, the panel
+   reveals and the hover lifts.
+================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
